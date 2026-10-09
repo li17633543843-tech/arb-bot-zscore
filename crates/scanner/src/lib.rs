@@ -11,6 +11,7 @@ pub mod rank;
 pub mod sanity;
 pub mod scan;
 pub mod stability;
+pub mod zscore;
 
 pub use convergence::{BasisPoint, HalfLife, basis_series, half_life};
 pub use identity::{Cluster, Clustering};
@@ -22,3 +23,4 @@ pub use scan::{
     ExcludedReading, ScanReport, SymbolView, Totals, VenueReport, filter_by_base, rerank, scan,
 };
 pub use stability::FundingStability;
+pub use zscore::{Decision as ZScoreDecision, Engine as ZScoreEngine, Evaluation as ZScoreEvaluation, Settings as ZScoreSettings, Tick as ZScoreTick};
