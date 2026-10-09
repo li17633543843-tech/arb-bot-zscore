@@ -1,5 +1,8 @@
 # arb-bot
 
+> 本分支正在加入 Bybit × Bitget 的有状态 Z-score 价差回归策略。策略内核与设计边界见
+> [`docs/STRATEGY_ZSCORE.md`](docs/STRATEGY_ZSCORE.md)。原有资金费、价差扫描及安全执行框架保留。
+
 [English](README.en.md) · 中文
 
 > ⚠️ **免责声明**：本项目仅供学习与研究，**不构成任何投资建议**。永续合约与杠杆交易风险极高，可能损失全部本金。
