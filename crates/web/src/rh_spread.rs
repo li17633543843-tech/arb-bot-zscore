@@ -1,12 +1,11 @@
-//! 跨场所同名合约价差监控（只读，不下单；自动交易见 `rh_auto`）。
+//! CEX 跨场所同名合约价差监控（只读，不下单；自动交易见 `rh_auto`）。
 //!
-//! 最早只做 Lighter RH ↔ Arcus（都在 Robinhood Chain 上、都用 USDG 保证金）；现在按**组**监控，
-//! 支持 Arcus、Lighter RH、Hyperliquid 主 dex 与 HIP-3 xyz / io 任意两家（`ARB_RH_SPREAD_PAIRS`）。
+//! 按**组**监控 Binance、Bybit、Bitget、OKX、Gate 任意两家
+//! （`ARB_RH_SPREAD_PAIRS`）。旧的 DEX 组不再进入运行配置。
 //! 价格偶尔会偏离：一边比另一边贵出手续费加穿价以上。这里：
 //!
-//! 1. 用各家的行情 WebSocket 维护本地盘口（REST 轮询会打穿 Lighter RH 的 IP 限频，
-//!    并挤占实盘下单用的额度）；每家只连一条，几组共用；
-//! 2. 每秒按「这笔名义吃完深度的均价」算两个方向的可成交价差，扣掉两家各开平一次的吃单费
+//! 1. 复用全量扫描快照的买一、卖一、一档名义深度、费率和身份分簇，不重复请求交易所；
+//! 2. 按「这笔名义吃完一档深度的均价」算两个方向的可成交价差，扣掉两家各开平一次的吃单费
 //!    和立即平仓的穿价；
 //! 3. 每分钟落盘一行中间价基差（每组一个文件前缀），按合约、按时段（盘中 / 盘后 / 周末 / 加密币全天）
 //!    统计「正常水平」。股票类合约在休市时常常有**系统性**偏差：现价差大不等于会收敛到 0；
@@ -109,8 +108,22 @@ impl Config {
             ),
             dir: var("ARB_RH_SPREAD_DIR").map_or_else(|| PathBuf::from("rh-spread"), PathBuf::from),
             pairs: match var("ARB_RH_SPREAD_PAIRS") {
-                Some(raw) => Pair::parse_list(&raw)
-                    .map_err(|error| anyhow::anyhow!("ARB_RH_SPREAD_PAIRS：{error}"))?,
+                Some(raw) => {
+                    let selected = Pair::parse_list(&raw)
+                        .map_err(|error| anyhow::anyhow!("ARB_RH_SPREAD_PAIRS：{error}"))?;
+                    let cex: Vec<Pair> = selected
+                        .into_iter()
+                        .filter(|pair| {
+                            pairs::CEX_SUPPORTED.contains(&pair.a)
+                                && pairs::CEX_SUPPORTED.contains(&pair.b)
+                        })
+                        .collect();
+                    if cex.is_empty() {
+                        Pair::parse_list(pairs::DEFAULT_PAIRS).expect("默认组合法")
+                    } else {
+                        cex
+                    }
+                }
                 // 没指定：用户配了 API 的场所（与实盘同一套凭据识别，不联网）两两组合。
                 None => default_pairs(),
             },
@@ -120,17 +133,10 @@ impl Config {
     }
 }
 
-/// 默认的组：按凭据识别出的实盘场所（`ARB_LIVE_VENUES` 或自动识别）里价差监控支持的，两两组合。
-/// 识别不出两家时退回 [`pairs::DEFAULT_PAIRS`]。
+/// 默认监控五家 CEX 的全部两两组合。这里用的是公共行情，
+/// 不应根据是否配了实盘 API 凭据删掉组合；要缩小范围可显式设 `ARB_RH_SPREAD_PAIRS`。
 fn default_pairs() -> Vec<Pair> {
-    let detected = arb_exec::live_connect::live_venues(None)
-        .map(|selection| pairs::all_pairs(&selection.venues))
-        .unwrap_or_default();
-    if detected.is_empty() {
-        Pair::parse_list(pairs::DEFAULT_PAIRS).expect("默认组合法")
-    } else {
-        detected
-    }
+    Pair::parse_list(pairs::DEFAULT_PAIRS).expect("默认组合法")
 }
 
 /// 页面上一行：一组里一个合约此刻的状况。
@@ -243,7 +249,7 @@ pub const ALERTS_PER_MINUTE: usize = 2;
 /// 这家的盘口是不是「没变也推」的快照：是的话它的年龄就是数据新鲜度。
 /// Lighter 只推变化：安静的市场几秒没增量是常态，新鲜度靠连接活着保证（断线即清空盘口）。
 pub fn snapshot_feed(venue: Venue) -> bool {
-    venue != Venue::LighterRh
+    !pairs::CEX_SUPPORTED.contains(&venue) && venue != Venue::LighterRh
 }
 
 /// 估算一组里一个合约此刻的状况。纯计算，单测覆盖。
@@ -434,6 +440,65 @@ pub struct Monitor {
 /// 订阅变化：每家场所要订阅的市场名（全量）。
 type Subscriptions = HashMap<Venue, Vec<String>>;
 
+/// 把扫描器的 CEX 读数变成价差监控的市场目录。CEX 的订阅键直接用归一化 base，
+/// 因为本监控不再单独建 WebSocket 连接。
+fn catalog_from_report(report: &arb_scanner::ScanReport) -> Catalog {
+    let mut catalog = Catalog::new();
+    for symbol in &report.symbols {
+        for rate in &symbol.rates {
+            if !pairs::CEX_SUPPORTED.contains(&rate.venue) {
+                continue;
+            }
+            catalog.entry(rate.venue).or_default().insert(
+                rate.symbol.base.clone(),
+                pairs::VenueMarket {
+                    key: rate.symbol.base.clone(),
+                    taker_fee: rate.taker_fee,
+                    category: Some("CRYPTO".into()),
+                    outside_rth: None,
+                },
+            );
+        }
+    }
+    catalog
+}
+
+/// 把 CEX 批量行情的一档买卖价/名义量变成本地一档盘。
+/// 没有公开一档量的读数不会伪造深度，因此自然显示“深度不够”。
+fn books_from_report(
+    report: &arb_scanner::ScanReport,
+    now: Instant,
+) -> HashMap<(Venue, String), LocalBook> {
+    let mut books = HashMap::new();
+    for symbol in &report.symbols {
+        for rate in &symbol.rates {
+            if !pairs::CEX_SUPPORTED.contains(&rate.venue) {
+                continue;
+            }
+            let (Some(bid), Some(ask), Some(bid_usdt), Some(ask_usdt)) = (
+                rate.best_bid,
+                rate.best_ask,
+                rate.bid_size_usdt,
+                rate.ask_size_usdt,
+            ) else {
+                continue;
+            };
+            if bid <= Decimal::ZERO
+                || ask <= bid
+                || bid_usdt <= Decimal::ZERO
+                || ask_usdt <= Decimal::ZERO
+            {
+                continue;
+            }
+            let mut book = LocalBook::new(now);
+            LocalBook::apply(&mut book.bids, bid, bid_usdt / bid);
+            LocalBook::apply(&mut book.asks, ask, ask_usdt / ask);
+            books.insert((rate.venue, rate.symbol.base.clone()), book);
+        }
+    }
+    books
+}
+
 impl Monitor {
     pub fn new(config: Config, alerts: Arc<Alerter>) -> Arc<Self> {
         let view = View {
@@ -592,6 +657,14 @@ impl Monitor {
     }
 
     async fn run(self: Arc<Self>, client: reqwest::Client, cache: Arc<crate::cache::ScanCache>) {
+        if self
+            .venues()
+            .iter()
+            .all(|venue| pairs::CEX_SUPPORTED.contains(venue))
+        {
+            self.run_cex(cache).await;
+            return;
+        }
         let mut catalog = Catalog::new();
         loop {
             let errors = self.refresh_catalog(&client, &mut catalog).await;
@@ -818,6 +891,247 @@ impl Monitor {
                     view.lines = lines;
                 }
             }
+        }
+    }
+
+    /// CEX 监控复用全量扫描快照。这份快照已经包含买一、卖一、一档名义深度、
+    /// 真实吃单费率和身份分簇；不额外轮询五家交易所，避免与扫描器叠加限频。
+    async fn run_cex(self: Arc<Self>, cache: Arc<crate::cache::ScanCache>) {
+        let mut states = Vec::new();
+        let now = Utc::now();
+        for &pair in &self.config.pairs {
+            let (mut history, broken) =
+                history::load(&self.config.dir, &pair.file_prefix(), now).await;
+            if broken > 0 {
+                warn!(pair = %pair.id(), broken, "价差历史里有坏行，已跳过");
+            }
+            history.prune(now);
+            states.push(PairState {
+                pair,
+                markets: Vec::new(),
+                history,
+                minute: Minute {
+                    start: now.timestamp() / 60 * 60,
+                    ..Minute::default()
+                },
+                normals: HashMap::new(),
+                note: Some("等首轮 CEX 扫描快照".into()),
+            });
+        }
+
+        let mut books = HashMap::new();
+        let mut connected = Connected::default();
+        for venue in self.venues() {
+            connected.venues.insert(venue, false);
+        }
+        let mut last_generated = None;
+        // CEX 行情来自周期扫描；同一份快照每秒重复展示不算新的信号确认。
+        let mut signal_observations: HashMap<(String, String, &'static str), u8> = HashMap::new();
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        info!(
+            pairs = %self.config.pairs.iter().map(|p| p.id()).collect::<Vec<_>>().join(","),
+            "CEX 价差监控启动（复用扫描快照）"
+        );
+        loop {
+            tick.tick().await;
+            if crate::shutdown::is_draining() {
+                for state in &states {
+                    let _ = history::append(
+                        &self.config.dir,
+                        &state.pair.file_prefix(),
+                        &state.minute.rows(),
+                        Utc::now(),
+                    )
+                    .await;
+                }
+                return;
+            }
+
+            let Some(snapshot) = cache.get().await else {
+                self.set_error(Some("等待首轮 CEX 扫描完成".into())).await;
+                continue;
+            };
+            let stale = snapshot.age() > Duration::from_secs(300);
+            let new_snapshot = last_generated.as_ref() != Some(&snapshot.report.generated_at);
+            if new_snapshot {
+                last_generated = Some(snapshot.report.generated_at.clone());
+                let catalog = catalog_from_report(&snapshot.report);
+                let identity = pairs::identity_of(&snapshot.report);
+                self.rebuild(&mut states, &catalog, Some(&identity));
+                books = books_from_report(&snapshot.report, Instant::now());
+                for venue in self.venues() {
+                    let ok = snapshot
+                        .report
+                        .venues
+                        .iter()
+                        .any(|row| row.venue == venue && row.ok);
+                    connected.venues.insert(venue, ok);
+                }
+            }
+            if stale {
+                signal_observations.clear();
+                connected.venues.values_mut().for_each(|up| *up = false);
+                self.set_error(Some(format!(
+                    "CEX 扫描快照已 {} 秒没有刷新，暂停计算",
+                    snapshot.age().as_secs()
+                )))
+                .await;
+            } else {
+                self.set_error(None).await;
+            }
+
+            let now_utc = Utc::now();
+            let now = Instant::now();
+            let start = now_utc.timestamp() / 60 * 60;
+            let mut lines = Vec::new();
+            for state in &mut states {
+                let pair = state.pair;
+                if start != state.minute.start {
+                    let rows = state.minute.rows();
+                    rows.iter().for_each(|row| state.history.push(row));
+                    state.history.prune(now_utc);
+                    if let Err(error) = history::append(
+                        &self.config.dir,
+                        &pair.file_prefix(),
+                        &rows,
+                        now_utc,
+                    )
+                    .await
+                    {
+                        warn!(pair = %pair.id(), "价差历史写不进去：{error}");
+                    }
+                    state.minute = Minute {
+                        start,
+                        ..Minute::default()
+                    };
+                    state.normals.clear();
+                }
+                for market in &state.markets {
+                    let session = classify(now_utc, true, None);
+                    let (normal, normal_minutes) = state
+                        .normals
+                        .entry((market.base.clone(), session))
+                        .or_insert_with(|| {
+                            (
+                                state.history.normal(&market.base, session, now_utc),
+                                state.history.minutes(&market.base, session, now_utc),
+                            )
+                        })
+                        .clone();
+                    let mut line = if stale {
+                        let mut line = evaluate(
+                            pair,
+                            market,
+                            None,
+                            None,
+                            normal,
+                            normal_minutes,
+                            session,
+                            &self.config,
+                            now,
+                        );
+                        line.note = Some("扫描快照过期".into());
+                        line
+                    } else {
+                        evaluate(
+                            pair,
+                            market,
+                            books.get(&(pair.a, market.a.key.clone())),
+                            books.get(&(pair.b, market.b.key.clone())),
+                            normal,
+                            normal_minutes,
+                            session,
+                            &self.config,
+                            now,
+                        )
+                    };
+                    let id = pair.id();
+                    let raw_direction = line.best.as_ref().filter(|best| best.signal).map(|best| best.direction);
+                    if new_snapshot {
+                        signal_observations.retain(|(p, base, direction), _| {
+                            p != &id || base != &market.base || Some(*direction) == raw_direction
+                        });
+                        if let Some(direction) = raw_direction {
+                            let count = signal_observations
+                                .entry((id.clone(), market.base.clone(), direction))
+                                .or_insert(0);
+                            *count = count.saturating_add(1).min(2);
+                        }
+                    }
+                    if let Some(best) = line.best.as_mut() {
+                        let confirmed = signal_observations
+                            .get(&(id, market.base.clone(), best.direction))
+                            .is_some_and(|count| *count >= 2);
+                        best.signal &= confirmed && !stale;
+                        best.signal_sec = if best.signal { SIGNAL_HOLD.as_secs() } else { 0 };
+                    }
+                    line.age_sec = Some(snapshot.age().as_secs());
+                    if new_snapshot && let Some(basis) = line.basis_pct.and_then(|b| b.to_f64()) {
+                        state
+                            .minute
+                            .basis
+                            .entry(market.base.clone())
+                            .or_default()
+                            .push(basis);
+                        state.minute.sessions.insert(market.base.clone(), session);
+                        let keep_max = |map: &mut HashMap<String, f64>, value: Option<f64>| {
+                            if let Some(value) = value {
+                                let slot = map.entry(market.base.clone()).or_insert(value);
+                                *slot = slot.max(value);
+                            }
+                        };
+                        keep_max(
+                            &mut state.minute.entry_a,
+                            line.long_a.as_ref().and_then(|l| l.quote.entry_pct.to_f64()),
+                        );
+                        keep_max(
+                            &mut state.minute.entry_b,
+                            line.long_b.as_ref().and_then(|l| l.quote.entry_pct.to_f64()),
+                        );
+                    }
+                    self.maybe_alert(&line);
+                    lines.push(line);
+                }
+            }
+            lines.sort_by(|a, b| {
+                let key = |line: &Line| {
+                    line.best
+                        .as_ref()
+                        .and_then(|best| best.net_usdt)
+                        .unwrap_or(Decimal::MIN)
+                };
+                key(b)
+                    .cmp(&key(a))
+                    .then_with(|| a.pair.cmp(&b.pair))
+                    .then_with(|| a.base.cmp(&b.base))
+            });
+            let pair_views = states
+                .iter()
+                .map(|state| {
+                    let fees: Vec<Decimal> = state
+                        .markets
+                        .iter()
+                        .filter_map(PairMarket::round_trip_pct)
+                        .collect();
+                    PairView {
+                        id: state.pair.id(),
+                        a: state.pair.a,
+                        b: state.pair.b,
+                        markets: state.markets.len(),
+                        history_minutes: state.history.coverage_minutes(),
+                        fee_min_pct: fees.iter().min().copied(),
+                        fee_max_pct: fees.iter().max().copied(),
+                        note: state.note.clone(),
+                    }
+                })
+                .collect();
+            let mut view = self.view.write().await;
+            view.connected = connected.clone();
+            view.pairs = pair_views;
+            view.updated_at = Some(snapshot.report.generated_at.clone());
+            view.lines = lines;
         }
     }
 

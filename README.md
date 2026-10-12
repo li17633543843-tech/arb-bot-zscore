@@ -779,16 +779,14 @@ Arcus（`/v1/funding`）；其它场所显示「未接入」，不拿 0 冒充�
   全仓持仓不使用这个模型，只读取交易所报告的有效强平价；缺数据就无法执行爆仓保护。
 - HIP-3 只接了 `xyz` 与 `io` 两个子交易所；其余子交易所多数重复上市同一批股票。
 
-## 跨场所价差监控与自动交易
+## CEX 跨场所价差监控与自动交易
 
-看板「RH 价差」页。两家都在 Robinhood Chain、都用 USDG 保证金，有 37 个同名合约（美股、指数、商品、加密币），
-价格偶尔偏离。监控与提醒本身不下单、不连账户；下单只有两种途径：点一行跳到策略页手动预览确认，或在面板上**显式开启**自动交易。
+看板「价差监控」页。目前监控 Binance、Bybit、Bitget、OKX、Gate 五家 CEX 的两两组合。
+监控与提醒本身不下单；下单只有两种途径：点一行跳到策略页手动预览确认，或在面板上**显式开启**自动交易。
 
-- **行情**：两家的 WebSocket（Lighter RH `order_book/{id}` 增量 + nonce 连续性校验，断档自动重订阅；
-  Arcus `l2Orderbook` 25 档完整快照），实测合计约 240 KB/s。不走 REST 轮询：Lighter RH 按 IP 限频极紧，轮询会挤占实盘下单额度。
-  断线指数退避重连（1 秒起、封顶 60 秒），断线期间盘口作废；Arcus 盘口 15 秒没更新就不计算。
-- **每秒计算**两个方向（多 Arcus 空 RH / 多 RH 空 Arcus）：按估算名义（默认 2000 USDT）吃完两边深度的均价算**可成交价差**，
-  再扣**立即平仓穿价**与**往返手续费**（Arcus 基础档 0.0225% × 开平两次；Lighter RH 0；Lighter 没报费率时按 Arcus 费率保守估），
+- **行情**：复用看板的全量 CEX 扫描快照，包含买一、卖一、一档名义深度、真实吃单费率和资产身份分簇；随 `ARB_SCAN_INTERVAL_SEC` 刷新。快照超过 5 分钟不更新就停止计算。
+- **双向计算**：按估算名义（默认 2000 USDT）核对两边一档深度后算**可成交价差**，
+  再扣**立即平仓穿价**与**往返手续费**；一档量不足或交易所没给深度时不伪造滑点，
   得到「收敛到 0 净收益」。
 - **正常基差**：每个合约每分钟落一行中间价基差的中位数到 `rh-spread/rh-spread-YYYYMMDD.jsonl`（保留 14 天，`ARB_RH_SPREAD_DIR` 可改），
   按**时段**（美股盘中 / 盘后 / 周末，以 Arcus `isOutsideRth` 为准，拿不到时按纽约时间推算；加密币全天）统计过去 7 天的中位数、p10/p90、MAD。
@@ -805,15 +803,12 @@ Arcus（`/v1/funding`）；其它场所显示「未接入」，不拿 0 冒充�
 | `ARB_RH_SPREAD_ALERT_PCT` | `0.05` | 提醒门槛：回到正常水平的预估净收益（%，0.001 ~ 5） |
 | `ARB_RH_SPREAD_EQUITIES_ONLY` | 关 | `on` 只看股票、指数、商品，不看加密币 |
 | `ARB_RH_SPREAD_DIR` | `rh-spread` | 分钟历史目录（相对工作目录）；自动交易设置也存在这里（`auto.json`） |
-| `ARB_RH_SPREAD_PAIRS` | 见下 | 监控哪几组，`场所A:场所B` 逗号分隔；支持 `arcus`、`lighter-rh`、`hyperliquid`、`hyperliquid-xyz`、`hyperliquid-io` |
-| `ARB_ENTROPY_SELF_REBATE` | `0` | Entropy（`hyperliquid-io` 的部署方）自返佣比例，小数：Tier 4 = `2`（200%） |
+| `ARB_RH_SPREAD_PAIRS` | 见下 | 监控哪几组，`场所A:场所B` 逗号分隔；支持 `binance`、`bybit`、`bitget`、`okx`、`gate` |
 
 ### 多组监控
 
-默认（不设 `ARB_RH_SPREAD_PAIRS`）：**按凭据识别出的实盘场所**（与实盘同一套识别，`ARB_LIVE_VENUES` 或自动识别）里价差监控支持的，两两组合。
-5 家都配了 API 时是 10 组；识别不出两家时退回 `arcus:lighter-rh`、`hyperliquid-xyz:lighter-rh`、`arcus:hyperliquid-xyz`、`hyperliquid-io:lighter-rh`、`arcus:hyperliquid-io`。
-组内左右顺序固定（Arcus、Hyperliquid、HL-xyz、HL-io、Lighter RH），已攒的历史方向不变。
-每家只连一条行情 WebSocket，几组共用（Hyperliquid 用 `l2Book` 订阅，每侧 20 档完整快照，实测约 5 秒一次，15 秒没更新就不算数）。
+默认（不设 `ARB_RH_SPREAD_PAIRS`）：五家 CEX 的全部 10 个两两组合，无须交易 API 凭据。
+组内左右顺序固定：Binance、Bybit、Bitget、OKX、Gate。旧 `.env` 如果只有 DEX 组，启动时会自动改用这 10 组。
 
 - **基差口径**：每组 `(左 − 右) / 均值`，方向 `long_a` = 多左空右。最早那组 `arcus:lighter-rh` 与原来同号，
   历史文件仍是 `rh-spread-YYYYMMDD.jsonl`，已攒的历史照常使用；其它组写 `spread-<左>-<右>-YYYYMMDD.jsonl`，从零开始攒。

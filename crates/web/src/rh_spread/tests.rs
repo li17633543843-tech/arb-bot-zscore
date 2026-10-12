@@ -714,24 +714,29 @@ fn catalogs_keep_fees_honest_and_pairs_need_a_verified_identity() {
     assert!(Pair::parse("binance:arcus").is_err());
     assert!(Pair::parse("arcus:arcus").is_err());
     assert!(Pair::parse_list("arcus:lighter-rh,lighter-rh:arcus").is_err());
-    assert_eq!(Pair::parse_list(pairs::DEFAULT_PAIRS).unwrap()[0], Pair::RH);
-    // 配了 API 的场所两两组合；a / b 顺序固定，已有历史的组方向不变；不支持的场所（binance）忽略。
+    assert_eq!(
+        Pair::parse_list(pairs::DEFAULT_PAIRS).unwrap()[0],
+        Pair {
+            a: Venue::Binance,
+            b: Venue::Bybit,
+        }
+    );
+    // 5 家 CEX 两两组合；a / b 顺序固定，DEX 不加入新监控组。
     let all = pairs::all_pairs(&[
-        Venue::LighterRh,
         Venue::Binance,
-        Venue::HyperliquidIo,
+        Venue::Bybit,
+        Venue::Bitget,
+        Venue::Okx,
+        Venue::Gate,
         Venue::Arcus,
-        Venue::Hyperliquid,
-        Venue::HyperliquidXyz,
     ]);
     assert_eq!(all.len(), 10);
     for (a, b) in [
-        (Venue::Arcus, Venue::LighterRh),
-        (Venue::HyperliquidXyz, Venue::LighterRh),
-        (Venue::Arcus, Venue::HyperliquidXyz),
-        (Venue::HyperliquidIo, Venue::LighterRh),
-        (Venue::Arcus, Venue::HyperliquidIo),
-        (Venue::Hyperliquid, Venue::LighterRh),
+        (Venue::Binance, Venue::Bybit),
+        (Venue::Binance, Venue::Gate),
+        (Venue::Bybit, Venue::Bitget),
+        (Venue::Bitget, Venue::Okx),
+        (Venue::Okx, Venue::Gate),
     ] {
         assert!(all.contains(&Pair { a, b }), "{a}:{b}");
     }

@@ -2737,6 +2737,7 @@ function renderPositions() {
 // 按「组」监控：每组两家 a / b，基差 = (a − b) / 均值，方向 long_a = 多 a 空 b、long_b = 多 b 空 a。
 
 const VENUE_LABEL = {
+  binance: 'Binance', bybit: 'Bybit', bitget: 'Bitget', okx: 'OKX', gate: 'Gate',
   arcus: 'Arcus', 'lighter-rh': 'RH', hyperliquid: 'HL', 'hyperliquid-xyz': 'HL-xyz', 'hyperliquid-io': 'HL-io',
 };
 const venueLabel = (venue) => VENUE_LABEL[venue] || venue;

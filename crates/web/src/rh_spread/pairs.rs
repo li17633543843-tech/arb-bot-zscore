@@ -13,8 +13,22 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use arb_core::{Decimal, Venue};
 use serde::Serialize;
 
-/// 价差监控支持的场所（各有行情 WebSocket 接入）。
-pub const SUPPORTED: [Venue; 5] = [
+/// 新版价差监控的 CEX 场所。
+pub const CEX_SUPPORTED: [Venue; 5] = [
+    Venue::Binance,
+    Venue::Bybit,
+    Venue::Bitget,
+    Venue::Okx,
+    Venue::Gate,
+];
+
+/// 解析器仍识别旧 DEX 组，便于读取旧历史与测试；运行配置会只保留 [`CEX_SUPPORTED`]。
+pub const SUPPORTED: [Venue; 10] = [
+    Venue::Binance,
+    Venue::Bybit,
+    Venue::Bitget,
+    Venue::Okx,
+    Venue::Gate,
     Venue::Arcus,
     Venue::LighterRh,
     Venue::Hyperliquid,
@@ -22,17 +36,17 @@ pub const SUPPORTED: [Venue; 5] = [
     Venue::HyperliquidIo,
 ];
 
-/// 没有识别出实盘场所时的默认组：原来的一组 + Hyperliquid 股票子交易所与 RH 链上两家的组合。
-pub const DEFAULT_PAIRS: &str = "arcus:lighter-rh,hyperliquid-xyz:lighter-rh,arcus:hyperliquid-xyz,hyperliquid-io:lighter-rh,arcus:hyperliquid-io";
+/// 没有识别出实盘场所时，默认监控 5 家 CEX 的全部 10 个两两组合。
+pub const DEFAULT_PAIRS: &str = "binance:bybit,binance:bitget,binance:okx,binance:gate,bybit:bitget,bybit:okx,bybit:gate,bitget:okx,bitget:gate,okx:gate";
 
 /// 组里谁当 a（基差被减数）：排在前面的。定死这个顺序，已经攒下的历史（`arcus:lighter-rh`、
 /// `hyperliquid-xyz:lighter-rh` …）方向不变。
 const ORDER: [Venue; 5] = [
-    Venue::Arcus,
-    Venue::Hyperliquid,
-    Venue::HyperliquidXyz,
-    Venue::HyperliquidIo,
-    Venue::LighterRh,
+    Venue::Binance,
+    Venue::Bybit,
+    Venue::Bitget,
+    Venue::Okx,
+    Venue::Gate,
 ];
 
 /// 这些场所里价差监控支持的、两两组合的全部组（顺序见 [`ORDER`]）。不到两家为空。
@@ -96,6 +110,9 @@ impl Pair {
         if pair.a == pair.b {
             return Err(format!("组 {raw:?} 的两家是同一个场所"));
         }
+        if CEX_SUPPORTED.contains(&pair.a) != CEX_SUPPORTED.contains(&pair.b) {
+            return Err(format!("组 {raw:?} 不能把 CEX 和 DEX 混为一组"));
+        }
         Ok(pair)
     }
 
@@ -118,14 +135,16 @@ impl Pair {
         Ok(out)
     }
 
-    /// 有一边是 Hyperliquid：要按扫描器的身份簇核对同名合约。
+    /// CEX 与 Hyperliquid 组的同名不一定是同一资产，必须经过扫描器的身份分簇。
     pub fn needs_identity_check(self) -> bool {
-        [self.a, self.b].iter().any(|v| {
-            matches!(
-                v,
-                Venue::Hyperliquid | Venue::HyperliquidXyz | Venue::HyperliquidIo
-            )
-        })
+        CEX_SUPPORTED.contains(&self.a)
+            || CEX_SUPPORTED.contains(&self.b)
+            || [self.a, self.b].iter().any(|v| {
+                matches!(
+                    v,
+                    Venue::Hyperliquid | Venue::HyperliquidXyz | Venue::HyperliquidIo
+                )
+            })
     }
 }
 
@@ -224,13 +243,7 @@ pub fn pair_markets(
             .category
             .clone()
             .or_else(|| market_b.category.clone())
-            .unwrap_or_else(|| {
-                if pair.a == Venue::Hyperliquid || pair.b == Venue::Hyperliquid {
-                    "CRYPTO".into()
-                } else {
-                    "EQUITIES".into()
-                }
-            });
+            .unwrap_or_else(|| "CRYPTO".into());
         if equities_only && category == "CRYPTO" {
             continue;
         }
