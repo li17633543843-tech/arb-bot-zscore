@@ -992,13 +992,8 @@ impl Monitor {
                     let rows = state.minute.rows();
                     rows.iter().for_each(|row| state.history.push(row));
                     state.history.prune(now_utc);
-                    if let Err(error) = history::append(
-                        &self.config.dir,
-                        &pair.file_prefix(),
-                        &rows,
-                        now_utc,
-                    )
-                    .await
+                    if let Err(error) =
+                        history::append(&self.config.dir, &pair.file_prefix(), &rows, now_utc).await
                     {
                         warn!(pair = %pair.id(), "价差历史写不进去：{error}");
                     }
@@ -1048,7 +1043,11 @@ impl Monitor {
                         )
                     };
                     let id = pair.id();
-                    let raw_direction = line.best.as_ref().filter(|best| best.signal).map(|best| best.direction);
+                    let raw_direction = line
+                        .best
+                        .as_ref()
+                        .filter(|best| best.signal)
+                        .map(|best| best.direction);
                     if new_snapshot {
                         signal_observations.retain(|(p, base, direction), _| {
                             p != &id || base != &market.base || Some(*direction) == raw_direction
@@ -1065,7 +1064,11 @@ impl Monitor {
                             .get(&(id, market.base.clone(), best.direction))
                             .is_some_and(|count| *count >= 2);
                         best.signal &= confirmed && !stale;
-                        best.signal_sec = if best.signal { SIGNAL_HOLD.as_secs() } else { 0 };
+                        best.signal_sec = if best.signal {
+                            SIGNAL_HOLD.as_secs()
+                        } else {
+                            0
+                        };
                     }
                     line.age_sec = Some(snapshot.age().as_secs());
                     if new_snapshot && let Some(basis) = line.basis_pct.and_then(|b| b.to_f64()) {
@@ -1084,11 +1087,15 @@ impl Monitor {
                         };
                         keep_max(
                             &mut state.minute.entry_a,
-                            line.long_a.as_ref().and_then(|l| l.quote.entry_pct.to_f64()),
+                            line.long_a
+                                .as_ref()
+                                .and_then(|l| l.quote.entry_pct.to_f64()),
                         );
                         keep_max(
                             &mut state.minute.entry_b,
-                            line.long_b.as_ref().and_then(|l| l.quote.entry_pct.to_f64()),
+                            line.long_b
+                                .as_ref()
+                                .and_then(|l| l.quote.entry_pct.to_f64()),
                         );
                     }
                     self.maybe_alert(&line);

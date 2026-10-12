@@ -23,4 +23,7 @@ pub use scan::{
     ExcludedReading, ScanReport, SymbolView, Totals, VenueReport, filter_by_base, rerank, scan,
 };
 pub use stability::FundingStability;
-pub use zscore::{Decision as ZScoreDecision, Engine as ZScoreEngine, Evaluation as ZScoreEvaluation, Settings as ZScoreSettings, Tick as ZScoreTick};
+pub use zscore::{
+    Decision as ZScoreDecision, Engine as ZScoreEngine, Evaluation as ZScoreEvaluation,
+    Settings as ZScoreSettings, Tick as ZScoreTick,
+};

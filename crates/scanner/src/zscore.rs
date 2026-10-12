@@ -142,7 +142,8 @@ impl Engine {
                 Some(Decision::CloseStop)
             } else if held_ms >= self.settings.max_hold_ms {
                 Some(Decision::CloseTimeout)
-            } else if held_ms >= self.settings.min_hold_ms && z_score.abs() <= self.settings.exit_z {
+            } else if held_ms >= self.settings.min_hold_ms && z_score.abs() <= self.settings.exit_z
+            {
                 Some(Decision::CloseConvergence)
             } else {
                 None
@@ -175,7 +176,10 @@ impl Engine {
         let pending = match self.pending {
             Some(signal) if signal.direction == direction => signal,
             _ => {
-                let signal = PendingSignal { direction, since_ms: tick.at_ms };
+                let signal = PendingSignal {
+                    direction,
+                    since_ms: tick.at_ms,
+                };
                 self.pending = Some(signal);
                 signal
             }
@@ -202,7 +206,10 @@ impl Engine {
             );
         }
 
-        self.position = Some(Position { direction, opened_at_ms: tick.at_ms });
+        self.position = Some(Position {
+            direction,
+            opened_at_ms: tick.at_ms,
+        });
         self.pending = None;
         self.evaluation(
             Decision::Open(direction),
@@ -264,7 +271,12 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn tick(at_ms: i64, spread_bps: f64, projected: Decimal) -> Tick {
-        Tick { at_ms, spread_bps, book_skew_ms: 10, projected_net_pnl: projected }
+        Tick {
+            at_ms,
+            spread_bps,
+            book_skew_ms: 10,
+            projected_net_pnl: projected,
+        }
     }
 
     fn settings() -> Settings {
@@ -286,12 +298,30 @@ mod tests {
     #[test]
     fn waits_for_confirmation_and_projected_profit() {
         let mut engine = Engine::new(settings()).unwrap();
-        assert_eq!(engine.on_tick(tick(0, 0.0, dec!(1))).decision, Decision::Warmup);
-        assert_eq!(engine.on_tick(tick(1_000, 0.0, dec!(1))).decision, Decision::Warmup);
-        assert_eq!(engine.on_tick(tick(2_000, 10.0, dec!(1))).decision, Decision::AwaitingConfirmation);
-        assert_eq!(engine.on_tick(tick(3_000, 20.0, dec!(1))).decision, Decision::AwaitingConfirmation);
-        assert_eq!(engine.on_tick(tick(4_000, 30.0, dec!(0.05))).decision, Decision::ProjectedNetPnl);
-        assert!(matches!(engine.on_tick(tick(5_000, 40.0, dec!(0.20))).decision, Decision::Open(_)));
+        assert_eq!(
+            engine.on_tick(tick(0, 0.0, dec!(1))).decision,
+            Decision::Warmup
+        );
+        assert_eq!(
+            engine.on_tick(tick(1_000, 0.0, dec!(1))).decision,
+            Decision::Warmup
+        );
+        assert_eq!(
+            engine.on_tick(tick(2_000, 10.0, dec!(1))).decision,
+            Decision::AwaitingConfirmation
+        );
+        assert_eq!(
+            engine.on_tick(tick(3_000, 20.0, dec!(1))).decision,
+            Decision::AwaitingConfirmation
+        );
+        assert_eq!(
+            engine.on_tick(tick(4_000, 30.0, dec!(0.05))).decision,
+            Decision::ProjectedNetPnl
+        );
+        assert!(matches!(
+            engine.on_tick(tick(5_000, 40.0, dec!(0.20))).decision,
+            Decision::Open(_)
+        ));
     }
 
     #[test]
@@ -311,8 +341,17 @@ mod tests {
         let mut engine = Engine::new(config).unwrap();
         engine.on_tick(tick(0, 0.0, dec!(1)));
         engine.on_tick(tick(1_000, 0.0, dec!(1)));
-        assert!(matches!(engine.on_tick(tick(2_000, 10.0, dec!(1))).decision, Decision::Open(_)));
-        assert_eq!(engine.on_tick(tick(3_000, 10.0, dec!(1))).decision, Decision::Hold);
-        assert_eq!(engine.on_tick(tick(7_000, 10.0, dec!(1))).decision, Decision::CloseConvergence);
+        assert!(matches!(
+            engine.on_tick(tick(2_000, 10.0, dec!(1))).decision,
+            Decision::Open(_)
+        ));
+        assert_eq!(
+            engine.on_tick(tick(3_000, 10.0, dec!(1))).decision,
+            Decision::Hold
+        );
+        assert_eq!(
+            engine.on_tick(tick(7_000, 10.0, dec!(1))).decision,
+            Decision::CloseConvergence
+        );
     }
 }
