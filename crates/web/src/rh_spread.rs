@@ -136,7 +136,7 @@ impl Config {
 /// 默认监控五家 CEX 的全部两两组合。这里用的是公共行情，
 /// 不应根据是否配了实盘 API 凭据删掉组合；要缩小范围可显式设 `ARB_RH_SPREAD_PAIRS`。
 fn default_pairs() -> Vec<Pair> {
-    Pair::parse_list(pairs::DEFAULT_PAIRS).expect("默认组合法")
+    pairs::all_pairs(&pairs::CEX_SUPPORTED)
 }
 
 /// 页面上一行：一组里一个合约此刻的状况。
@@ -956,7 +956,7 @@ impl Monitor {
             let stale = snapshot.age() > Duration::from_secs(300);
             let new_snapshot = last_generated.as_ref() != Some(&snapshot.report.generated_at);
             if new_snapshot {
-                last_generated = Some(snapshot.report.generated_at.clone());
+                last_generated = Some(snapshot.report.generated_at);
                 let catalog = catalog_from_report(&snapshot.report);
                 let identity = pairs::identity_of(&snapshot.report);
                 self.rebuild(&mut states, &catalog, Some(&identity));
@@ -1137,7 +1137,7 @@ impl Monitor {
             let mut view = self.view.write().await;
             view.connected = connected.clone();
             view.pairs = pair_views;
-            view.updated_at = Some(snapshot.report.generated_at.clone());
+            view.updated_at = Some(snapshot.report.generated_at);
             view.lines = lines;
         }
     }
