@@ -93,7 +93,6 @@ struct PendingSignal {
 
 #[derive(Debug, Clone, Copy)]
 struct Position {
-    direction: Direction,
     opened_at_ms: i64,
 }
 
@@ -207,7 +206,6 @@ impl Engine {
         }
 
         self.position = Some(Position {
-            direction,
             opened_at_ms: tick.at_ms,
         });
         self.pending = None;
