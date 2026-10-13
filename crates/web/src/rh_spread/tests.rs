@@ -10,6 +10,7 @@ async fn live_probe() {
         enabled: true,
         size_usdt: Decimal::from(2000),
         alert_net_pct: Decimal::new(5, 2),
+        fee_fallback_per_side: None,
         equities_only: false,
         dir: dir.clone(),
         pairs: Pair::parse_list(pairs::DEFAULT_PAIRS).unwrap(),
@@ -95,6 +96,7 @@ fn config() -> Config {
         enabled: true,
         size_usdt: dec!(1000),
         alert_net_pct: dec!(0.05),
+        fee_fallback_per_side: None,
         equities_only: false,
         dir: std::env::temp_dir(),
         pairs: vec![Pair::RH],
@@ -344,6 +346,51 @@ fn stale_thin_or_missing_books_never_signal() {
         now,
     );
     assert!(no_fee.best.is_none(), "不知道手续费就不估净收益");
+}
+
+#[test]
+fn an_explicit_fee_fallback_only_fills_unknown_legs_and_is_disclosed() {
+    let now = Instant::now();
+    let cheap = book(&[(dec!(99.98), dec!(100))], &[(dec!(100), dec!(100))], now);
+    let dear = book(
+        &[(dec!(100.20), dec!(100))],
+        &[(dec!(100.22), dec!(100))],
+        now,
+    );
+    let mut cfg = config();
+    cfg.fee_fallback_per_side = Some(dec!(0.0008));
+
+    // 第一家的费率未知；第二家公开报 0。只对未知的一腿回落，四次成交合计 0.16%。
+    let estimated = evaluate(
+        Pair::RH,
+        &market_with("INDICES", None),
+        Some(&cheap),
+        Some(&dear),
+        Some(normal(0.0)),
+        500,
+        Session::Off,
+        &cfg,
+        now,
+    );
+    assert_eq!(estimated.fee_round_trip_pct, Some(dec!(0.16)));
+    assert!(estimated.fee_estimated);
+    assert!(estimated.note.is_none());
+    assert!(estimated.long_a.is_some());
+
+    // 公开报出的 0 不能被回落值覆盖。
+    let known_zero = evaluate(
+        Pair::RH,
+        &market_with("INDICES", Some(Decimal::ZERO)),
+        Some(&cheap),
+        Some(&dear),
+        Some(normal(0.0)),
+        500,
+        Session::Off,
+        &cfg,
+        now,
+    );
+    assert_eq!(known_zero.fee_round_trip_pct, Some(Decimal::ZERO));
+    assert!(!known_zero.fee_estimated);
 }
 
 #[test]

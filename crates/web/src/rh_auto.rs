@@ -299,6 +299,10 @@ pub fn candidate_of(line: &Line, settings: &Settings) -> Option<Candidate> {
     if line.note.is_some() {
         return None;
     }
+    // 纸面模式可以用显式配置的保守手续费估算；实盘自动开仓必须有两腿实际费率。
+    if settings.mode == Mode::Live && line.fee_estimated {
+        return None;
+    }
     let normal = line.normal.as_ref()?;
     let (long, short, leg) = line.legs(best.direction)?;
     let net = leg.net_to_normal_pct?;
@@ -996,6 +1000,7 @@ mod tests {
             a: Venue::Arcus,
             b: Venue::LighterRh,
             fee_round_trip_pct: Some(dec("0.045")),
+            fee_estimated: false,
             base: base.into(),
             category: "EQUITIES".into(),
             session: Session::Rth,
@@ -1067,6 +1072,20 @@ mod tests {
             ..settings()
         };
         assert_eq!(candidate_of(&nvda, &no_target).unwrap().target_pct, None);
+    }
+
+    #[test]
+    fn estimated_fees_are_paper_only_for_automatic_orders() {
+        let mut estimated = line("OPENAI", "long_a", leg("0.30", "0.20", "0.09"), -0.11);
+        estimated.fee_estimated = true;
+        assert!(candidate_of(&estimated, &settings()).is_some());
+        let live = Settings {
+            mode: Mode::Live,
+            ..settings()
+        };
+        assert!(candidate_of(&estimated, &live).is_none());
+        estimated.fee_estimated = false;
+        assert!(candidate_of(&estimated, &live).is_some());
     }
 
     #[test]

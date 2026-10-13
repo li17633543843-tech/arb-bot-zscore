@@ -2775,7 +2775,8 @@ function rhStatus(line, view) {
   }
   if (line.best?.signal) {
     const held = line.best.signal_sec ?? 0;
-    return `<span class="tag pc-pass" title="回到正常水平的预估净收益超过提醒门槛；连续 10 秒才推送 Telegram">信号 ${held}s</span>`;
+    const estimated = line.fee_estimated;
+    return `<span class="tag pc-pass" title="${estimated ? '至少一腿手续费使用配置估算值；只供纸面自动交易。' : ''}回到正常水平的预估净收益超过提醒门槛；连续 10 秒才推送 Telegram">${estimated ? '纸面信号' : '信号'} ${held}s</span>`;
   }
   return '<span class="muted">—</span>';
 }
@@ -2790,7 +2791,7 @@ function rhRow(line, view) {
   const zText = z === null ? '<span class="muted">—</span>' : `<span class="${Math.abs(z) >= 3 ? 'neg' : 'muted'}">${z > 0 ? '+' : ''}${z.toFixed(1)}</span>`;
   const net = leg?.net_to_normal_pct;
   const usdText = line.best?.net_usdt == null ? '' : ` <span class="muted small">≈ ${pnlUsd(line.best.net_usdt)}</span>`;
-  const fee = line.fee_round_trip_pct == null ? '' : ` · 往返费 ${num(line.fee_round_trip_pct)}%`;
+  const fee = line.fee_round_trip_pct == null ? '' : ` · 往返费 ${num(line.fee_round_trip_pct)}%${line.fee_estimated ? '（估算）' : ''}`;
   return `<tr class="${line.best?.signal ? 'rh-signal' : ''}" data-rh-pair="${esc(line.pair)}" data-rh-base="${esc(line.base)}" title="点击打开下单界面：带上方向和回到正常基差的收敛目标（仍需预览确认）">
     <td><b>${esc(line.base)}</b> <span class="muted small">${esc((line.category || '').toLowerCase())}</span><br><span class="muted small">${esc(pairLabel(line))}${esc(fee)}</span></td>
     <td>${esc(RH_SESSION[line.session] || line.session)}</td>
@@ -2924,7 +2925,7 @@ function renderRhSpread() {
   ].map(([label, value, tone]) => `<div class="stat"><span>${label}</span><b class="${tone}">${esc(value)}</b></div>`).join('');
   const shownPairs = filter === 'all' ? pairs : pairs.filter((p) => p.id === filter);
   const feeText = (p) => p.fee_min_pct == null ? '—' : num(p.fee_min_pct) === num(p.fee_max_pct) ? `${num(p.fee_min_pct)}%` : `${num(p.fee_min_pct)}% ~ ${num(p.fee_max_pct)}%`;
-  const pairRows = shownPairs.map((p) => `<li><b>${esc(`${venueLabel(p.a)} ↔ ${venueLabel(p.b)}`)}</b>：${p.markets} 个合约，往返手续费 ${esc(feeText(p))}，已攒历史 ${(p.history_minutes / 60).toFixed(1)} 小时${rhAutoTradable(p) ? '，<span class="pos">可自动交易</span>' : '，只监控（实盘没连这两家）'}${p.note ? ` <span class="muted">（${esc(p.note)}）</span>` : ''}</li>`).join('');
+  const pairRows = shownPairs.map((p) => `<li><b>${esc(`${venueLabel(p.a)} ↔ ${venueLabel(p.b)}`)}</b>：${p.markets} 个合约，往返手续费 ${esc(feeText(p))}${p.fee_estimated ? '（部分估算；实盘自动交易跳过）' : ''}，已攒历史 ${(p.history_minutes / 60).toFixed(1)} 小时${rhAutoTradable(p) ? '，<span class="pos">可自动交易</span>' : '，只监控（实盘没连这两家）'}${p.note ? ` <span class="muted">（${esc(p.note)}）</span>` : ''}</li>`).join('');
   const notices = [];
   if (view.error) notices.push(`<div class="notice error">${esc(view.error)}</div>`);
   if (pairRows) notices.push(`<div class="notice"><ul>${pairRows}</ul><span class="small muted">基差 = (左 − 右) / 均值。每个合约每个时段至少 ${view.min_minutes} 分钟样本才算出「正常基差」并开始提醒（窗口 ${view.window_days} 天）；在那之前只显示「收敛到 0」的估算，对股票类合约通常偏乐观。往返费按基础档上限算（HL 子交易所含 growth mode 折扣与 Entropy 返佣设置）。</span></div>`);
@@ -3067,7 +3068,7 @@ function rhAutoHtml(a, cfg) {
       <span class="small muted">${esc(data.status || '')}</span>
     </div>
     ${data.disabled_reason && !on ? `<div class="notice error">上次自动关闭的原因：${esc(data.disabled_reason)}</div>` : ''}
-    <p class="small muted">所有你配了 API 的交易所两两组成的组都参与（实盘：两家都已连接）。任何一组的信号「回到正常净收益」达到门槛、且开仓可成交价差与收敛到 0 净收益都为正、连续保持够久后，按下面的参数自动下一笔价差单。每一笔都走和手动下单同一套检查：对账干净、按你的金额现拉盘口重算、单笔上限${maxSize ? `（${esc(String(maxSize))} USDT）` : ''}、持仓数上限、当日亏损、Telegram /pause 与熔断。同一合约已有仓位不再开；每次尝试后该合约冷却 10 分钟；执行中断（结果未知）或连续 ${data.max_failures} 次回滚会自动关闭。</p>
+    <p class="small muted">所有你配了 API 的交易所两两组成的组都参与（实盘：两家都已连接）。任何一组的信号「回到正常净收益」达到门槛、且开仓可成交价差与收敛到 0 净收益都为正、连续保持够久后，按下面的参数自动下一笔价差单。手续费估算信号只供纸面自动交易，实盘自动交易不会采用。每一笔都走和手动下单同一套检查：对账干净、按你的金额现拉盘口重算、单笔上限${maxSize ? `（${esc(String(maxSize))} USDT）` : ''}、持仓数上限、当日亏损、Telegram /pause 与熔断。同一合约已有仓位不再开；每次尝试后该合约冷却 10 分钟；执行中断（结果未知）或连续 ${data.max_failures} 次回滚会自动关闭。</p>
     <div class="rh-auto-grid">
       <label class="field"><span>账户</span><select data-rh-auto="mode">
         <option value="paper"${f.mode === 'paper' ? ' selected' : ''}>纸面（不碰真实资金）</option>

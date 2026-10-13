@@ -53,6 +53,8 @@ pub struct Config {
     pub size_usdt: Decimal,
     /// 提醒门槛：回到正常水平的预估净收益（%）。
     pub alert_net_pct: Decimal,
+    /// 公开接口不给吃单费率时的显式估算值（单腿、每次成交的小数）；仅供纸面自动交易。
+    pub fee_fallback_per_side: Option<Decimal>,
     /// 只看股票类（股票、指数、商品），不看加密币。
     pub equities_only: bool,
     pub dir: PathBuf,
@@ -102,6 +104,18 @@ impl Config {
                 Decimal::new(1, 3),
                 Decimal::from(5),
             )?,
+            fee_fallback_per_side: var("ARB_RH_SPREAD_FEE_FALLBACK")
+                .map(|raw| -> anyhow::Result<Decimal> {
+                    let fee = arb_core::parse_decimal(&raw).ok_or_else(|| {
+                        anyhow::anyhow!("ARB_RH_SPREAD_FEE_FALLBACK 必须是十进制数，收到 {raw:?}")
+                    })?;
+                    anyhow::ensure!(
+                        (Decimal::new(1, 4)..=Decimal::new(1, 2)).contains(&fee),
+                        "ARB_RH_SPREAD_FEE_FALLBACK 必须在 0.0001 到 0.01 之间，收到 {fee}"
+                    );
+                    Ok(fee)
+                })
+                .transpose()?,
             equities_only: matches!(
                 var("ARB_RH_SPREAD_EQUITIES_ONLY").as_deref(),
                 Some("1" | "on" | "true")
@@ -152,6 +166,8 @@ pub struct Line {
     pub session: Session,
     /// 往返两腿手续费（%）。
     pub fee_round_trip_pct: Option<Decimal>,
+    /// `true` = 至少一条腿使用了显式配置的手续费估算值。
+    pub fee_estimated: bool,
     /// 中间价基差（%）：(a − b) / 均值。
     pub basis_pct: Option<Decimal>,
     pub normal: Option<Normal>,
@@ -220,6 +236,8 @@ pub struct PairView {
     /// 这组的往返手续费范围（%）：合约之间可能不同（growth mode）。
     pub fee_min_pct: Option<Decimal>,
     pub fee_max_pct: Option<Decimal>,
+    /// 组内至少一个合约的手续费含配置估算值。
+    pub fee_estimated: bool,
     /// 还没发现市场的原因（等扫描、某家市场列表取不到）。
     pub note: Option<String>,
 }
@@ -265,7 +283,7 @@ pub fn evaluate(
     config: &Config,
     now: Instant,
 ) -> Line {
-    let fee = market.round_trip_pct();
+    let fee = market.round_trip_with_fallback(config.fee_fallback_per_side);
     let mut line = Line {
         pair: pair.id(),
         a: pair.a,
@@ -273,7 +291,8 @@ pub fn evaluate(
         base: market.base.clone(),
         category: market.category.clone(),
         session,
-        fee_round_trip_pct: fee,
+        fee_round_trip_pct: fee.map(|(value, _)| value),
+        fee_estimated: fee.is_some_and(|(_, estimated)| estimated),
         basis_pct: None,
         normal_missing_minutes: history::MIN_MINUTES.saturating_sub(normal_minutes),
         normal: normal.clone(),
@@ -309,7 +328,7 @@ pub fn evaluate(
         return line;
     };
     line.basis_pct = Some(basis);
-    let Some(fee) = fee else {
+    let Some((fee, _)) = fee else {
         line.note = Some("至少一家的吃单费率不知道，不估净收益".into());
         return line;
     };
@@ -518,6 +537,7 @@ impl Monitor {
                     history_minutes: 0,
                     fee_min_pct: None,
                     fee_max_pct: None,
+                    fee_estimated: false,
                     note: Some("启动中".into()),
                 })
                 .collect(),
@@ -871,7 +891,15 @@ impl Monitor {
                     let pair_views: Vec<PairView> = states
                         .iter()
                         .map(|state| {
-                            let fees: Vec<Decimal> = state.markets.iter().filter_map(PairMarket::round_trip_pct).collect();
+                            let fees: Vec<Decimal> = state
+                                .markets
+                                .iter()
+                                .filter_map(|market| {
+                                    market
+                                        .round_trip_with_fallback(self.config.fee_fallback_per_side)
+                                        .map(|(fee, _)| fee)
+                                })
+                                .collect();
                             PairView {
                                 id: state.pair.id(),
                                 a: state.pair.a,
@@ -880,6 +908,11 @@ impl Monitor {
                                 history_minutes: state.history.coverage_minutes(),
                                 fee_min_pct: fees.iter().min().copied(),
                                 fee_max_pct: fees.iter().max().copied(),
+                                fee_estimated: state.markets.iter().any(|market| {
+                                    market
+                                        .round_trip_with_fallback(self.config.fee_fallback_per_side)
+                                        .is_some_and(|(_, estimated)| estimated)
+                                }),
                                 note: state.note.clone(),
                             }
                         })
@@ -1120,7 +1153,11 @@ impl Monitor {
                     let fees: Vec<Decimal> = state
                         .markets
                         .iter()
-                        .filter_map(PairMarket::round_trip_pct)
+                        .filter_map(|market| {
+                            market
+                                .round_trip_with_fallback(self.config.fee_fallback_per_side)
+                                .map(|(fee, _)| fee)
+                        })
                         .collect();
                     PairView {
                         id: state.pair.id(),
@@ -1130,6 +1167,11 @@ impl Monitor {
                         history_minutes: state.history.coverage_minutes(),
                         fee_min_pct: fees.iter().min().copied(),
                         fee_max_pct: fees.iter().max().copied(),
+                        fee_estimated: state.markets.iter().any(|market| {
+                            market
+                                .round_trip_with_fallback(self.config.fee_fallback_per_side)
+                                .is_some_and(|(_, estimated)| estimated)
+                        }),
                         note: state.note.clone(),
                     }
                 })
@@ -1201,8 +1243,13 @@ pub fn venue_label(venue: Venue) -> &'static str {
 pub fn alert_text(line: &Line, best: &Best, config: &Config) -> Option<String> {
     let (long, short, leg) = line.legs(best.direction)?;
     let normal = line.normal.as_ref()?;
+    let fee_note = if line.fee_estimated {
+        "（至少一腿手续费为配置估算值；仅供纸面模拟，实盘自动交易不采用）"
+    } else {
+        ""
+    };
     Some(format!(
-        "📈 价差偏离：{} {}，多 {} / 空 {}\n可成交价差 {}%（{} USDT），{}正常基差 {:.3}%，当前 {}%（{} − {}）\n回到正常水平预估净赚 {}%（≈{} USDT，已扣手续费与平仓穿价）\n提醒；是否自动下单见面板的自动交易设置。同一合约同一方向 30 分钟内不重复。",
+        "📈 价差偏离：{} {}，多 {} / 空 {}\n可成交价差 {}%（{} USDT），{}正常基差 {:.3}%，当前 {}%（{} − {}）\n回到正常水平预估净赚 {}%（≈{} USDT，已扣手续费与平仓穿价）{}\n提醒；是否自动下单见面板的自动交易设置。同一合约同一方向 30 分钟内不重复。",
         line.base,
         line.session.label(),
         venue_label(long),
@@ -1216,6 +1263,7 @@ pub fn alert_text(line: &Line, best: &Best, config: &Config) -> Option<String> {
         venue_label(line.b),
         leg.net_to_normal_pct?.round_dp(3),
         best.net_usdt?.normalize(),
+        fee_note,
     ))
 }
 
