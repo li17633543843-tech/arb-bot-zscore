@@ -183,6 +183,16 @@ impl PairMarket {
     pub fn round_trip_pct(&self) -> Option<Decimal> {
         Some((self.a.taker_fee? + self.b.taker_fee?) * Decimal::TWO * Decimal::ONE_HUNDRED)
     }
+
+    /// 显式允许时，只给缺失费率的腿使用估算值；返回值标明是否含估算费率。
+    pub fn round_trip_with_fallback(&self, fallback: Option<Decimal>) -> Option<(Decimal, bool)> {
+        if let Some(fee) = self.round_trip_pct() {
+            return Some((fee, false));
+        }
+        let a = self.a.taker_fee.or(fallback)?;
+        let b = self.b.taker_fee.or(fallback)?;
+        Some(((a + b) * Decimal::TWO * Decimal::ONE_HUNDRED, true))
+    }
 }
 
 /// 扫描器的身份簇：(场所, base) → 簇编号。同一个簇 = 价格核实过的同一资产。

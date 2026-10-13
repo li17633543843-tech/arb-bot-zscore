@@ -318,6 +318,9 @@ test('RH spread rows show normal basis, direction, both net figures and honest w
   }
   const warming = app.rhStatus({ ...line, normal: null, normal_missing_minutes: 37, best: { ...line.best, signal: false } }, view);
   assert.match(warming, /还差 37 分钟/);
+  const estimated = app.rhRow({ ...line, fee_estimated: true }, view);
+  assert.match(estimated, /往返费 0\.045%（估算）/);
+  assert.match(estimated, /纸面信号 12s/);
   assert.match(app.rhStatus({ ...line, note: 'Arcus 盘口 20 秒没更新，不计算' }, view), /没更新/);
   const noNormal = app.rhRow({ ...line, normal: null, z: null, long_a: { ...leg, net_to_normal_pct: null }, best: { ...line.best, signal: false, net_usdt: null } }, view);
   assert.doesNotMatch(noNormal, /rh-signal/);
