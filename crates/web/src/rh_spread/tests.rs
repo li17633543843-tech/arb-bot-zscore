@@ -352,7 +352,11 @@ fn stale_thin_or_missing_books_never_signal() {
 fn an_explicit_fee_fallback_only_fills_unknown_legs_and_is_disclosed() {
     let now = Instant::now();
     let cheap = book(&[(dec!(99.98), dec!(100))], &[(dec!(100), dec!(100))], now);
-    let dear = book(&[(dec!(100.20), dec!(100))], &[(dec!(100.22), dec!(100))], now);
+    let dear = book(
+        &[(dec!(100.20), dec!(100))],
+        &[(dec!(100.22), dec!(100))],
+        now,
+    );
     let mut cfg = config();
     cfg.fee_fallback_per_side = Some(dec!(0.0008));
 
